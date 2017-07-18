@@ -13,8 +13,10 @@
 #include <ESP8266WiFi.h>          // ESP8266 Core WiFi Library
 #include <DNSServer.h>            // Local DNS Server used for redirecting all requests to the configuration portal
 #include <ESP8266WebServer.h>     // Local WebServer used to serve the configuration portal
-#include <WiFiManager.h>          // https://github.com/tzapu/WiFiManager WiFi Configuration Magic
+#include <WiFiManager.h>          // WiFi Manager https://github.com/tzapu/WiFiManager
 #include <ArduinoJson.h>          // JSON Libary https://github.com/bblanchon/ArduinoJson
+#include <PubSubClient.h>         // MQTT Libary https://github.com/knolleary/pubsubclient
+#include <Ticker.h>               // Non-Blocking timer
 
 char mqtt_server[32];
 char mqtt_port[6] = "1883";
@@ -22,15 +24,19 @@ char mqtt_username[32];
 char mqtt_password[32];
 char lightr_nickname[32];
 
+WiFiClient espClient;
+PubSubClient MQTTclient(espClient);
+
+Ticker MQTTreconnectTicker;
+
 void setup() {
+  pinMode(BUILTIN_LED, OUTPUT);
   #ifdef DEBUG
     Serial.begin(115200);
   #endif
   
   startWiFi(); //Start WiFi + Load config, will not progress past until connected
 
-  DEBUG_PRINTLN();
-  DEBUG_PRINTLN(WiFi.localIP());
   DEBUG_PRINTLN(lightr_nickname);
   DEBUG_PRINTLN(mqtt_server);
   DEBUG_PRINTLN(mqtt_port);
@@ -39,7 +45,6 @@ void setup() {
 }
 
 void loop() {
-  // Loop Stuff
 }
 
 void startWiFi(){
@@ -49,7 +54,6 @@ void startWiFi(){
     WiFiManager wifiMgr;
     SPIFFS.format();
     wifiMgr.resetSettings();
-    Serial.println("FORMAT COMPLETE");
   #endif
   
   loadConfig(); 
