@@ -29,31 +29,61 @@ PubSubClient MQTTclient(espClient);
 
 Ticker MQTTreconnectTicker;
 
+bool _saveConfigFlag = false;
+
+bool _outputStatus = false;
+
 void setup() {
   pinMode(BUILTIN_LED, OUTPUT);
   #ifdef DEBUG
     Serial.begin(115200);
   #endif
-  
-  startWiFi(); //Start WiFi + Load config, will not progress past until connected
 
+  startWiFi(); //Start WiFi + Load config, will not progress past until connected
+  DEBUG_PRINTLN();
   DEBUG_PRINTLN(lightr_nickname);
   DEBUG_PRINTLN(mqtt_server);
   DEBUG_PRINTLN(mqtt_port);
   DEBUG_PRINTLN(mqtt_username);
   DEBUG_PRINTLN(mqtt_password);
+  DEBUG_PRINTLN();
+  
+  //
+  // Connect to MQTT
+  //
+
+  IPAddress MQTT_SERVER_ADR;
+  if (MQTT_SERVER_ADR.fromString(mqtt_server)) {
+    MQTTclient.setServer(MQTT_SERVER_ADR, atoi(mqtt_port)); // Converted to IP, Connect via IP
+    DEBUG_PRINTLN("SERVER VIA IP");
+  }else{
+    MQTTclient.setServer(mqtt_server, atoi(mqtt_port)); // Not IP Address, assume domain#
+    DEBUG_PRINT("SERVER VIA DOMAIN: ");
+    DEBUG_PRINTLN(mqtt_server);
+  }  
+  
+  MQTTclient.setCallback(mqttCallback);
+  MQTTconnect();
+  MQTTreconnectTicker.attach(5, MQTTconnect);
 }
 
 void loop() {
+
+  if(MQTTclient.connected()){
+    MQTTclient.loop();
+  }
+  
 }
 
 void startWiFi(){
   strcpy(lightr_nickname, String( "Lightr " + WiFi.macAddress() ).c_str()); // Hack to get nickname to default to "Lightr xx:xx:xx:xx:xx:xx"
   
   #ifdef FORMAT
+    DEBUG_PRINTLN("FORMAT START");
     WiFiManager wifiMgr;
     SPIFFS.format();
     wifiMgr.resetSettings();
+    DEBUG_PRINTLN("FORMAT COMPLETE");
   #endif
   
   loadConfig(); 
@@ -71,11 +101,12 @@ void startWiFi(){
   wifiManager.addParameter(&custom_mqtt_password);
   wifiManager.addParameter(&custom_nickname);
   
-  wifiManager.setSaveConfigCallback(saveConfig);
+  wifiManager.setSaveConfigCallback(saveConfigCallback);
   wifiManager.setAPStaticIPConfig(IPAddress(192,168,0,1), IPAddress(192,168,0,1), IPAddress(255,255,255,0));
   
   
   wifiManager.autoConnect(lightr_nickname);
+  DEBUG_PRINTLN();
   DEBUG_PRINTLN("Successfully Connected!");
   
   strcpy(mqtt_server, custom_mqtt_server.getValue());
@@ -83,6 +114,7 @@ void startWiFi(){
   strcpy(mqtt_username, custom_mqtt_username.getValue());
   strcpy(mqtt_password, custom_mqtt_password.getValue());
   strcpy(lightr_nickname, custom_nickname.getValue());
+  if(_saveConfigFlag){saveConfig();}
 }
 
 void loadConfig(){
@@ -121,9 +153,11 @@ void loadConfig(){
   }
 }
 
+void saveConfigCallback(){
+  _saveConfigFlag = true;
+}
+
 void saveConfig(){
-  DEBUG_PRINTLN("saving config");
-  
   DynamicJsonBuffer jsonBuffer;
   JsonObject& json = jsonBuffer.createObject();
   
@@ -143,3 +177,76 @@ void saveConfig(){
   json.printTo(configFile);
   configFile.close();
 }
+
+void MQTTconnect(){
+  if(!MQTTclient.connected()){
+    if(MQTTclient.connect(lightr_nickname, mqtt_username, mqtt_password)){
+
+      DEBUG_PRINTLN("MQTT Connected");
+
+      MQTTclient.subscribe("lights/all");                                                   // Respond to status of all
+      MQTTclient.subscribe(String( "lights/" + WiFi.macAddress() ).c_str());                // Respond W/ individual status
+      MQTTclient.subscribe(String( "lights/" + WiFi.macAddress() + "/set" ).c_str());       // Set to
+      MQTTclient.subscribe(String( "lights/" + WiFi.macAddress() + "/nickname" ).c_str());  // Change Nickname and save config
+    }
+  }
+  #ifdef DEBUG
+    if(MQTTclient.state() != 0){
+      DEBUG_PRINTLN( String("MQTT State: " + MQTTclient.state()).c_str());
+    }
+  #endif
+}
+
+void mqttCallback(char* topic, byte* payload, unsigned int length){
+  if( strcmp(topic, "lights/all") == 0 ){
+    String data = JSONstatus();
+    MQTTclient.publish("lights/all/status", data.c_str());
+  }else
+  if( strcmp(topic, String( "lights/" + WiFi.macAddress() ).c_str()) == 0 ){
+    String data = JSONstatus();
+    MQTTclient.publish(String( "lights/" + WiFi.macAddress() + "/status").c_str(), data.c_str());
+  }else
+  if( strcmp(topic, String( "lights/" + WiFi.macAddress() + "/set" ).c_str()) == 0 ){
+    if((char)payload[0] == '1') {
+      _outputStatus = true;
+      String data = JSONstatus();
+      MQTTclient.publish("lights/all/status", data.c_str());
+    }else
+    if((char)payload[0] == '0') {
+      _outputStatus = false;
+      String data = JSONstatus();
+      MQTTclient.publish("lights/all/status", data.c_str());
+    }else
+    if((char)payload[0] == 't') {
+      _outputStatus = !_outputStatus;
+      String data = JSONstatus();
+      MQTTclient.publish("lights/all/status", data.c_str());
+    }
+  }else
+  if( strcmp(topic, String( "lights/" + WiFi.macAddress() + "/nickname" ).c_str()) == 0 ){
+    // Change Nickname + save config
+  }
+  
+  
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("] ");
+  for (int i=0;i<length;i++) {
+    Serial.print((char)payload[i]);
+  }
+  Serial.println();
+
+}
+
+String JSONstatus(){
+  DynamicJsonBuffer jsonBuffer;
+    JsonObject& json = jsonBuffer.createObject();
+    json["MAC"] = WiFi.macAddress();
+    json["nickname"] = lightr_nickname;
+    json["status"] = _outputStatus;
+
+    String data;
+    json.printTo(data);
+    return data;
+}
+
