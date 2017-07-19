@@ -1,7 +1,7 @@
 #define DEBUG
 //#define FORMAT
 
-#ifdef DEBUG
+#ifdef DEBUG // Helper functions for debugging
  #define DEBUG_PRINTLN(x) Serial.println(x)
  #define DEBUG_PRINT(x) Serial.print(x)
 #else
@@ -17,12 +17,15 @@
 #include <ArduinoJson.h>          // JSON Libary https://github.com/bblanchon/ArduinoJson
 #include <PubSubClient.h>         // MQTT Libary https://github.com/knolleary/pubsubclient
 #include <Ticker.h>               // Non-Blocking timer
+#include <ESP8266mDNS.h>          // OTA Discovery
+#include <WiFiUdp.h>              // UDP for OTA
+#include <ArduinoOTA.h>           // Update OTA
 
 char mqtt_server[32];
 char mqtt_port[6] = "1883";
 char mqtt_username[32];
 char mqtt_password[32];
-char lightr_nickname[32];
+char lightr_nickname[32]; // Default is set when WiFi initialized (Needs MAC Address)
 
 WiFiClient espClient;
 PubSubClient MQTTclient(espClient);
@@ -42,14 +45,20 @@ void setup() {
   startWiFi(); //Start WiFi + Load config, will not progress past until connected
   
   DEBUG_PRINTLN();
+  DEBUG_PRINT("Nickname      : ");
   DEBUG_PRINTLN(lightr_nickname);
+  DEBUG_PRINT("MQTT Server   : ");
   DEBUG_PRINTLN(mqtt_server);
+  DEBUG_PRINT("MQTT Port     : ");
   DEBUG_PRINTLN(mqtt_port);
+  DEBUG_PRINT("MQTT Username : ");
   DEBUG_PRINTLN(mqtt_username);
+  DEBUG_PRINT("MQTT Password : ");
   DEBUG_PRINTLN(mqtt_password);
   DEBUG_PRINTLN();
   
   MQTTinit();
+  OTAinit();
 }
 
 void loop() {
@@ -57,6 +66,8 @@ void loop() {
   if(MQTTclient.connected()){
     MQTTclient.loop();
   }
+
+  ArduinoOTA.handle();
   
 }
 
@@ -271,5 +282,33 @@ String JSONstatus(){
     String data;
     json.printTo(data);
     return data;
+}
+
+void OTAinit(){
+  ArduinoOTA.setHostname(lightr_nickname);
+  // ArduinoOTA.setPort(8266);
+  // ArduinoOTA.setPassword((const char *)"123");
+  
+  ArduinoOTA.onStart([]() {
+    DEBUG_PRINTLN("OTA Start");
+  });
+  ArduinoOTA.onEnd([]() {
+    DEBUG_PRINTLN("\nOTA End");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    #ifdef DEBUG
+      Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+      Serial.println();
+    #endif
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) DEBUG_PRINTLN("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR) DEBUG_PRINTLN("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR) DEBUG_PRINTLN("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR) DEBUG_PRINTLN("Receive Failed");
+    else if (error == OTA_END_ERROR) DEBUG_PRINTLN("End Failed");
+  });
+  ArduinoOTA.begin();
 }
 
