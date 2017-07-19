@@ -26,20 +26,21 @@ char lightr_nickname[32];
 
 WiFiClient espClient;
 PubSubClient MQTTclient(espClient);
-
 Ticker MQTTreconnectTicker;
 
 bool _saveConfigFlag = false;
 
 bool _outputStatus = false;
+#define _outputPin LED_BUILTIN
 
 void setup() {
-  pinMode(BUILTIN_LED, OUTPUT);
+  pinMode(_outputPin, OUTPUT);
   #ifdef DEBUG
     Serial.begin(115200);
   #endif
 
   startWiFi(); //Start WiFi + Load config, will not progress past until connected
+  
   DEBUG_PRINTLN();
   DEBUG_PRINTLN(lightr_nickname);
   DEBUG_PRINTLN(mqtt_server);
@@ -48,23 +49,7 @@ void setup() {
   DEBUG_PRINTLN(mqtt_password);
   DEBUG_PRINTLN();
   
-  //
-  // Connect to MQTT
-  //
-
-  IPAddress MQTT_SERVER_ADR;
-  if (MQTT_SERVER_ADR.fromString(mqtt_server)) {
-    MQTTclient.setServer(MQTT_SERVER_ADR, atoi(mqtt_port)); // Converted to IP, Connect via IP
-    DEBUG_PRINTLN("SERVER VIA IP");
-  }else{
-    MQTTclient.setServer(mqtt_server, atoi(mqtt_port)); // Not IP Address, assume domain#
-    DEBUG_PRINT("SERVER VIA DOMAIN: ");
-    DEBUG_PRINTLN(mqtt_server);
-  }  
-  
-  MQTTclient.setCallback(mqttCallback);
-  MQTTconnect();
-  MQTTreconnectTicker.attach(5, MQTTconnect);
+  MQTTinit();
 }
 
 void loop() {
@@ -178,6 +163,22 @@ void saveConfig(){
   configFile.close();
 }
 
+void MQTTinit(){
+  IPAddress MQTT_SERVER_ADR;
+  if (MQTT_SERVER_ADR.fromString(mqtt_server)) {
+    MQTTclient.setServer(MQTT_SERVER_ADR, atoi(mqtt_port)); // Converted to IP, Connect via IP
+    DEBUG_PRINTLN("SERVER VIA IP");
+  }else{
+    MQTTclient.setServer(mqtt_server, atoi(mqtt_port)); // Not IP Address, assume domain#
+    DEBUG_PRINT("SERVER VIA DOMAIN: ");
+    DEBUG_PRINTLN(mqtt_server);
+  }  
+  
+  MQTTclient.setCallback(mqttCallback);
+  MQTTconnect();
+  MQTTreconnectTicker.attach(5, MQTTconnect);
+}
+
 void MQTTconnect(){
   if(!MQTTclient.connected()){
     if(MQTTclient.connect(lightr_nickname, mqtt_username, mqtt_password)){
@@ -195,46 +196,68 @@ void MQTTconnect(){
       DEBUG_PRINTLN( String("MQTT State: " + MQTTclient.state()).c_str());
     }
   #endif
+
 }
 
 void mqttCallback(char* topic, byte* payload, unsigned int length){
+
+  #ifdef DEBUG
+    DEBUG_PRINTLN();
+    DEBUG_PRINTLN();
+    DEBUG_PRINT("Topic:  ");
+    DEBUG_PRINTLN(topic);
+    DEBUG_PRINT("Length: ");
+    DEBUG_PRINTLN(length);
+    DEBUG_PRINTLN("Message: ");
+    for (int i=0; i < length; i++){
+      DEBUG_PRINT( (char)payload[i] );
+    } 
+    //DEBUG_PRINTLN( (char*)payload );
+    DEBUG_PRINTLN();
+    DEBUG_PRINTLN();
+  #endif
+  
   if( strcmp(topic, "lights/all") == 0 ){
     String data = JSONstatus();
     MQTTclient.publish("lights/all/status", data.c_str());
+    DEBUG_PRINTLN("Pub'd to lights/all/status");
+    DEBUG_PRINTLN(data.c_str());
   }else
+  
   if( strcmp(topic, String( "lights/" + WiFi.macAddress() ).c_str()) == 0 ){
     String data = JSONstatus();
     MQTTclient.publish(String( "lights/" + WiFi.macAddress() + "/status").c_str(), data.c_str());
   }else
+  
   if( strcmp(topic, String( "lights/" + WiFi.macAddress() + "/set" ).c_str()) == 0 ){
     if((char)payload[0] == '1') {
       _outputStatus = true;
+      digitalWrite(_outputPin, _outputStatus);
       String data = JSONstatus();
       MQTTclient.publish("lights/all/status", data.c_str());
     }else
     if((char)payload[0] == '0') {
       _outputStatus = false;
+      digitalWrite(_outputPin, _outputStatus);
       String data = JSONstatus();
       MQTTclient.publish("lights/all/status", data.c_str());
     }else
     if((char)payload[0] == 't') {
       _outputStatus = !_outputStatus;
+      digitalWrite(_outputPin, _outputStatus);
       String data = JSONstatus();
       MQTTclient.publish("lights/all/status", data.c_str());
     }
   }else
+  
   if( strcmp(topic, String( "lights/" + WiFi.macAddress() + "/nickname" ).c_str()) == 0 ){
-    // Change Nickname + save config
+    if(length < 32){ // Nickname variable is only 32 long, new nick must be shorter
+      memset(lightr_nickname, 0, sizeof(lightr_nickname)); // Clear original nickname (if new shorter woudln't overwrite)
+      strncpy(lightr_nickname, (char*)payload, length); // Change the nickname variable to the new nickname
+
+      saveConfig();
+    }
   }
-  
-  
-  Serial.print("Message arrived [");
-  Serial.print(topic);
-  Serial.print("] ");
-  for (int i=0;i<length;i++) {
-    Serial.print((char)payload[i]);
-  }
-  Serial.println();
 
 }
 
