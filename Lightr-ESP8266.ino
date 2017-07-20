@@ -1,4 +1,4 @@
-#define DEBUG
+//#define DEBUG
 //#define FORMAT
 
 #ifdef DEBUG // Helper functions for debugging
@@ -20,8 +20,9 @@
 #include <ESP8266mDNS.h>          // OTA Discovery
 #include <WiFiUdp.h>              // UDP for OTA
 #include <ArduinoOTA.h>           // Update OTA
+#include <InputDebounce.h>        // Easy Debouncing
 
-char mqtt_server[32];
+char mqtt_server[32];  
 char mqtt_port[6] = "1883";
 char mqtt_username[32];
 char mqtt_password[32];
@@ -33,11 +34,23 @@ Ticker MQTTreconnectTicker;
 
 bool _saveConfigFlag = false;
 
-bool _outputStatus = false;
-#define _outputPin LED_BUILTIN
+volatile bool _outputStatus = false; // Volatile becuase could be changed by Button Interrupt
+#define _outputPin 12 // GPIO12 Relay (HIGH to turn on)
+#define _outputLed 13 // Low to enable
+
+#define BTN1 0
+#define BTN2 14
+#define BUTTON_DEBOUNCE_DELAY 20 // [ms]
+#ifdef BTN1
+  static InputDebounce BTN1Debounce;
+#endif
+#ifdef BTN2
+  static InputDebounce BTN2Debounce;
+#endif
 
 void setup() {
   pinMode(_outputPin, OUTPUT);
+  pinMode(_outputLed, OUTPUT);
   #ifdef DEBUG
     Serial.begin(115200);
   #endif
@@ -59,6 +72,9 @@ void setup() {
   
   MQTTinit();
   OTAinit();
+  buttonInit();
+
+  setState(_outputStatus);
 }
 
 void loop() {
@@ -68,6 +84,7 @@ void loop() {
   }
 
   ArduinoOTA.handle();
+  buttonTick();
   
 }
 
@@ -231,34 +248,18 @@ void mqttCallback(char* topic, byte* payload, unsigned int length){
   if( strcmp(topic, "lights/all") == 0 ){
     String data = JSONstatus();
     MQTTclient.publish("lights/all/status", data.c_str());
-    DEBUG_PRINTLN("Pub'd to lights/all/status");
+    DEBUG_PRINTLN("Published to 'lights/all/status'");
     DEBUG_PRINTLN(data.c_str());
   }else
   
   if( strcmp(topic, String( "lights/" + WiFi.macAddress() ).c_str()) == 0 ){
-    String data = JSONstatus();
-    MQTTclient.publish(String( "lights/" + WiFi.macAddress() + "/status").c_str(), data.c_str());
+    publishStatus( String( "lights/" + WiFi.macAddress() + "/status").c_str() );
   }else
   
   if( strcmp(topic, String( "lights/" + WiFi.macAddress() + "/set" ).c_str()) == 0 ){
-    if((char)payload[0] == '1') {
-      _outputStatus = true;
-      digitalWrite(_outputPin, _outputStatus);
-      String data = JSONstatus();
-      MQTTclient.publish("lights/all/status", data.c_str());
-    }else
-    if((char)payload[0] == '0') {
-      _outputStatus = false;
-      digitalWrite(_outputPin, _outputStatus);
-      String data = JSONstatus();
-      MQTTclient.publish("lights/all/status", data.c_str());
-    }else
-    if((char)payload[0] == 't') {
-      _outputStatus = !_outputStatus;
-      digitalWrite(_outputPin, _outputStatus);
-      String data = JSONstatus();
-      MQTTclient.publish("lights/all/status", data.c_str());
-    }
+    if((char)payload[0] == '1'){ setState(true); }else
+    if((char)payload[0] == '0'){ setState(false); }else
+    if((char)payload[0] == 't'){ setState(!_outputStatus); }
   }else
   
   if( strcmp(topic, String( "lights/" + WiFi.macAddress() + "/nickname" ).c_str()) == 0 ){
@@ -272,6 +273,11 @@ void mqttCallback(char* topic, byte* payload, unsigned int length){
 
 }
 
+void publishStatus( const char* topic ){
+  String data = JSONstatus();
+  MQTTclient.publish(topic, data.c_str());
+}
+
 String JSONstatus(){
   DynamicJsonBuffer jsonBuffer;
     JsonObject& json = jsonBuffer.createObject();
@@ -282,6 +288,14 @@ String JSONstatus(){
     String data;
     json.printTo(data);
     return data;
+}
+
+void setState(bool state){
+  _outputStatus = state;
+  digitalWrite(_outputPin, _outputStatus);
+  digitalWrite(_outputLed, !_outputStatus);
+
+  publishStatus("lights/all/status");
 }
 
 void OTAinit(){
@@ -312,3 +326,38 @@ void OTAinit(){
   ArduinoOTA.begin();
 }
 
+void buttonInit(){
+  #ifdef BTN1
+    BTN1Debounce.registerCallbacks(pressedCallback, releasedCallback, pressedDurationCallback);
+    BTN1Debounce.setup(BTN1, BUTTON_DEBOUNCE_DELAY, InputDebounce::PIM_EXT_PULL_UP_RES                                                                                                                                                                           );
+  #endif
+  #ifdef BTN2
+    BTN2Debounce.registerCallbacks(pressedCallback, releasedCallback, pressedDurationCallback);
+    BTN2Debounce.setup(BTN2, BUTTON_DEBOUNCE_DELAY, InputDebounce::PIM_INT_PULL_UP_RES);
+  #endif
+}
+
+void buttonTick(){
+  unsigned long now = millis();
+  #ifdef BTN1
+    BTN1Debounce.process(now);
+  #endif
+  #ifdef BTN2
+    BTN2Debounce.process(now);
+  #endif
+}
+
+void pressedCallback()
+{
+  setState(!_outputStatus);
+}
+
+void releasedCallback()
+{
+  //
+}
+
+void pressedDurationCallback(unsigned long duration)
+{
+  //
+}
