@@ -1,4 +1,4 @@
-//#define DEBUG
+#define DEBUG
 //#define FORMAT
 
 #ifdef DEBUG // Helper functions for debugging
@@ -16,7 +16,7 @@
 #include <WiFiManager.h>          // WiFi Manager https://github.com/tzapu/WiFiManager
 #include <ArduinoJson.h>          // JSON Libary https://github.com/bblanchon/ArduinoJson
 #include <PubSubClient.h>         // MQTT Libary https://github.com/knolleary/pubsubclient
-#include <Ticker.h>               // Non-Blocking timer
+//#include <Ticker.h>               // Non-Blocking timer
 #include <ESP8266mDNS.h>          // OTA Discovery
 #include <WiFiUdp.h>              // UDP for OTA
 #include <ArduinoOTA.h>           // Update OTA
@@ -30,9 +30,10 @@ char lightr_nickname[32]; // Default is set when WiFi initialized (Needs MAC Add
 
 WiFiClient espClient;
 PubSubClient MQTTclient(espClient);
-Ticker MQTTreconnectTicker;
+//Ticker MQTTreconnectTicker;
 
 bool _saveConfigFlag = false;
+long lastReconnectAttempt;
 
 volatile bool _outputStatus = false; // Volatile becuase could be changed by Button Interrupt
 #define _outputPin 12 // GPIO12 Relay (HIGH to turn on)
@@ -56,7 +57,7 @@ void setup() {
   #endif
 
   startWiFi(); //Start WiFi + Load config, will not progress past until connected
-  
+
   DEBUG_PRINTLN();
   DEBUG_PRINT("Nickname      : ");
   DEBUG_PRINTLN(lightr_nickname);
@@ -78,11 +79,8 @@ void setup() {
 }
 
 void loop() {
-
-  if(MQTTclient.connected()){
-    MQTTclient.loop();
-  }
-
+ 
+  MQTTtick();
   ArduinoOTA.handle();
   buttonTick();
   
@@ -195,36 +193,49 @@ void MQTTinit(){
   IPAddress MQTT_SERVER_ADR;
   if (MQTT_SERVER_ADR.fromString(mqtt_server)) {
     MQTTclient.setServer(MQTT_SERVER_ADR, atoi(mqtt_port)); // Converted to IP, Connect via IP
-    DEBUG_PRINTLN("SERVER VIA IP");
+    DEBUG_PRINTLN("MQTT BROKER VIA IP");
+    DEBUG_PRINTLN(MQTT_SERVER_ADR);
   }else{
     MQTTclient.setServer(mqtt_server, atoi(mqtt_port)); // Not IP Address, assume domain#
-    DEBUG_PRINT("SERVER VIA DOMAIN: ");
+    DEBUG_PRINT("MQTT BROKER VIA DOMAIN: ");
     DEBUG_PRINTLN(mqtt_server);
   }  
   
   MQTTclient.setCallback(mqttCallback);
-  MQTTconnect();
-  MQTTreconnectTicker.attach(5, MQTTconnect);
+  MQTTreconnect();
+  //MQTTreconnectTicker.attach(5, MQTTconnect);
 }
 
-void MQTTconnect(){
-  if(!MQTTclient.connected()){
-    if(MQTTclient.connect(lightr_nickname, mqtt_username, mqtt_password)){
-
-      DEBUG_PRINTLN("MQTT Connected");
-
-      MQTTclient.subscribe("lights/all");                                                   // Respond to status of all
-      MQTTclient.subscribe(String( "lights/" + WiFi.macAddress() ).c_str());                // Respond W/ individual status
-      MQTTclient.subscribe(String( "lights/" + WiFi.macAddress() + "/set" ).c_str());       // Set to
-      MQTTclient.subscribe(String( "lights/" + WiFi.macAddress() + "/nickname" ).c_str());  // Change Nickname and save config
-    }
+boolean MQTTreconnect() {
+  if ( MQTTclient.connect(lightr_nickname, mqtt_username, mqtt_password) ) {
+    DEBUG_PRINTLN("MQTT Connected");
+    MQTTclient.subscribe("lights/all");
+    MQTTclient.subscribe(String( "lights/" + WiFi.macAddress() ).c_str());
+    MQTTclient.subscribe(String( "lights/" + WiFi.macAddress() + "/set" ).c_str());
+    MQTTclient.subscribe(String( "lights/" + WiFi.macAddress() + "/nickname" ).c_str());
   }
   #ifdef DEBUG
     if(MQTTclient.state() != 0){
-      DEBUG_PRINTLN( String("MQTT State: " + MQTTclient.state()).c_str());
+      DEBUG_PRINTLN( String("MQTT State: " + MQTTclient.state()).c_str() );
     }
   #endif
+  return MQTTclient.connected();
+}
 
+void MQTTtick(){
+  if (!MQTTclient.connected()) {
+    long now = millis();
+    if (now - lastReconnectAttempt > 5000) { // Has it been 5 seconds since the last reconnecet attempt?
+      lastReconnectAttempt = now;
+      // Attempt to reconnect
+      if ( MQTTreconnect() ){
+        lastReconnectAttempt = 0;
+      }
+    }
+  }else {
+    //MQTT is connected here
+    MQTTclient.loop();
+  }
 }
 
 void mqttCallback(char* topic, byte* payload, unsigned int length){
